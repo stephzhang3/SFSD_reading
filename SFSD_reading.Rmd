@@ -1,0 +1,261 @@
+---
+title: "SFSD_reading"
+author: "Stephanie"
+date: "November 6, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+install.packages("VIM")
+install.packages("missForest")
+install.packages("Hmisc")
+install.packages("censReg")
+install.packages("DMwR")
+install.packages("moments")
+install.packages("rpart")
+install.packages("randomForest")
+
+```
+
+```{r preloading}
+
+suppressMessages(library(tidyr));suppressMessages(library(plyr));suppressMessages(library(dplyr)); suppressMessages(library(ggplot2)); suppressMessages(library(reshape2)); suppressMessages(library(VIM)); suppressMessages(library(missForest)); suppressMessages(library(Hmisc)); suppressMessages(library(censReg)); suppressMessages(library(DMwR)); suppressMessages(library(stats)); suppressMessages(library(moments)); suppressMessages(library(rpart)); suppressMessages(library(randomForest))
+
+setwd('~/Desktop/Ed_Neuro/Reading_Data_SFSD')
+raw_full = read.csv(file="full.csv",header=T, na.strings=c("","NA", "N/A", "na", "n/a", " "))
+
+data_caasp <- raw_full %>% 
+  filter(have_caasp == TRUE) %>%
+  select(-(contains("math")))
+
+data_caasp_fp <- data_caasp %>%
+  select(-(contains("wj"))) %>%
+  select(-(studentno_fp:year_fp)) %>%
+  select(-(schoolyear_caasp))
+
+```
+
+
+```{r missing data imputation}
+summary(data_caasp_fp)
+
+### MISSING DATA (what to do with the 0s? / the skewed distribution)
+
+#missing forest 
+imputdata<- missForest(data_caasp_fp)
+df.imput<- imputdata$ximp
+
+#kNN imputation
+knnOutput <- knnImputation(data_caasp_fp)
+
+#only keeping scalescore
+scalescore <- knnOutput %>%
+  select(-(grade_caasp:ela_claim4_caasp)) %>%
+  select(-(ela_stderror_caasp:ela_achievementlevel_caasp))
+
+```
+
+```{r skewed variable detection, not quite sure what to do here}
+skewedVars <- NA
+
+for(i in names(scalescore)){
+  if(is.numeric(scalescore[,i])){
+      skewVal <- skewness(scalescore[,i])
+      print(paste(i, skewVal, sep = ": "))
+      if(abs(skewVal) > 0.5){
+        skewedVars <- c(skewedVars, i)
+      }
+  }
+}
+
+#only ela_scalescore_caasp and highfrequencywords50_fp are not skewed
+scalescore <- scalescore[c(1:4,6:10,5)]
+scalescore_norm <-scalescore
+scalescore_norm[,1:9]<- log(scalescore[1:9],2)
+
+for(i in names(scalescore_norm)){
+  if(is.numeric(scalescore_norm[,i])){
+      skewVal <- skewness(scalescore_norm[,i])
+      print(paste(i, skewVal, sep = ": "))
+      if(abs(skewVal) > 0.5){
+        skewedVars <- c(skewedVars, i)
+      }
+  }
+}
+```
+
+```{r correlation detection }
+
+# correlation 
+cormat <- round(cor(data_fp, use ="complete.obs"),2)
+melted_cormat <- melt(get_upper_tri(reorder_cormat(cormat)),na.rm = TRUE)
+
+# principal component analysis 
+data_fp <- knnOutput %>%
+  select(contains("fp"))
+fp_variables_pca<- princomp(data_fp, cor = TRUE)
+summary(fp_variables_pca)
+biplot(fp_variables_pca, expand=15, xlim=c(-0.30, 0.0), ylim=c(-0.1, 0.1))
+
+std_dev<- fp_variables_pca$sdev
+fp_varialbes_pca_var<- std_dev^2
+round(fp_varialbes_pca_var)
+
+#proportion of variance explained
+prop_varex <- fp_varialbes_pca_var/sum(fp_varialbes_pca_var)
+round(prop_varex,3)
+#scree plot
+plot(prop_varex, xlab = "Principal Component",
+     ylab = "Proportion of Variance Explained",
+     type = "b")
+#cumulative scree plot
+plot(cumsum(prop_varex), xlab = "Principal Component",
+     ylab = "Cumulative Proportion of Variance Explained",
+     type = "b") # 5 principal components
+
+biplot(fp_variables_pca, scale = 0)
+
+fp_variables_pca$loadings[1:5,1:5]
+fp_variables_pca$loadings # the relevant data is in the loadings component.
+load <- with(fp_variables_pca, unclass(loadings))
+round(load,3)
+
+# This final step then yields the proportional contribution to the each principal component
+aload <- abs(load) ## save absolute values
+
+percent_variance <- round(sweep(aload, 2, colSums(aload), "/"),3)
+colSums(sweep(aload, 2, colSums(aload), "/"))
+
+#variables to keep: uppercase_fp, highfrequencywords25_fp, highfrequencywords50_fp and blending_fp
+```
+
+```{r predictive data analysis}
+
+#new data set with retained variables
+vars_to_retain<- c("uppercase_fp", "highfrequencywords25_fp", "highfrequencywords50_fp", "blending_fp", "ela_scalescore_caasp")
+retained_scalescore <- scalescore[,vars_to_retain]
+
+# creating test and training data
+ratio = sample(1:nrow(retained_scalescore), size = 0.25*nrow(scalescore))
+train.data = scalescore[-ratio,] #Train dataset 75% of total
+test.data = scalescore[ratio,] #Test dataset 25% of total
+
+
+### multiple linear regression
+data_lm <- lm(formula = ela_scalescore_caasp ~., data = retained_scalescore)
+plot(data_lm, pch=16, which = 1)
+predict<- predict(data_lm, test.data)
+
+lm<- lm(formula = ela_scalescore_caasp ~., data = scalescore)
+predict<- predict(data_lm, test.data)
+
+#residual mean standard error 
+RMSE0<- RMSE(predict, test.data$ela_scalescore_caasp)
+RMSE0<- round(RMSE0, digits = 3)
+RMSE0 #0.032
+
+# calculate prediction accuracy and error rates
+actuals_preds <- data.frame(cbind(actuals=test.data$ela_scalescore_caasp, predicteds=predict)) # make actuals_predicteds dataframe.
+correlation_accuracy <- cor(actuals_preds)
+correlation_accuracy # 50%
+
+min_max_accuracy <- mean (apply(actuals_preds, 1, min) / apply(actuals_preds, 1, max))
+min_max_accuracy #.97 
+
+mape <- mean(abs((actuals_preds$predicteds - actuals_preds$actuals))/actuals_preds$actuals)
+mape #.025
+
+AIC(data_lm) #32931.22
+BIC(data_lm) #32966.97
+
+
+### Random Forest Model
+model.forest <- randomForest(ela_scalescore_caasp ~., data = train.data, method = "anova", ntree = 300, mtry = 2, replace = F,nodesize = 1, importance = T)
+varImpPlot(model.forest)
+
+prediction <- predict(model.forest,test.data)
+RMSE3 <- sqrt(mean((log(prediction)-log(test.data$ela_scalescore_caasp))^2))
+round(RMSE3, digits = 3) #0.025
+
+```
+
+
+```
+
+## Including Plots
+
+```{r functions, echo=FALSE}
+# FUNCTIONS
+
+#Calculate root mean squares function
+
+RMSE <- function(x,y) {
+  a <- sqrt(sum((log(x)-log(y))^2)/length(y))
+  return(a)
+}
+
+# Get lower triangle of the correlation matrix
+get_upper_tri<-function(cormat){
+  cormat[lower.tri(cormat)] <- NA
+  return(cormat)
+}
+
+# Reorder the matrix correlation
+reorder_cormat <- function(cormat){
+# Use correlation between variables as distance
+  dd <- as.dist((1-cormat)/2)
+  hc <- hclust(dd)
+  cormat <-cormat[hc$order, hc$order]
+}
+
+replace_outlier <- function(x){
+  qnt <- quantile(x, probs=c(.25, .75), na.rm = T)
+  caps <- quantile(x, probs=c(.05, .95), na.rm = T)
+  H <- 1.5 * IQR(x, na.rm = T)
+  x[x < (qnt[1] - H)] <- caps[1]
+  x[x > (qnt[2] + H)] <- caps[2]
+  return (x)
+}
+
+replace_0 <- function(x){
+  
+}
+```
+
+```{r ggplot}
+
+# Create a ggheatmap for fp_correlation variables
+
+ggheatmap <- ggplot(melted_cormat, aes(Var2, Var1, fill = value))+
+ geom_tile(color = "white")+
+ scale_fill_gradient2(low = "#D67236", high = "#FD6467", mid = "#5B1A18", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+    name="Pearson\nCorrelation") + 
+  theme_minimal()+ # minimal theme
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+    size = 12, hjust = 1))+
+ coord_fixed()
+
+ggheatmap + 
+geom_text(aes(Var2, Var1, label = value), color = "black", size = 4) +
+theme(
+  axis.title.x = element_blank(),
+  axis.title.y = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.border = element_blank(),
+  panel.background = element_blank(),
+  axis.ticks = element_blank(),
+  legend.justification = c(1, 0),
+  legend.position = c(0.6, 0.7),
+  legend.direction = "horizontal")+
+  guides(fill = guide_colorbar(barwidth = 7, barheight = 1,
+                title.position = "top", title.hjust = 0.5))
+```
+
+```{r missing values}
+
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
