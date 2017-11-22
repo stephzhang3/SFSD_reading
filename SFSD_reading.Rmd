@@ -16,12 +16,13 @@ install.packages("moments")
 install.packages("rpart")
 install.packages("randomForest")
 install.packages("ROCR")
+install.packages("modelr")
 
 ```
 
 ```{r preloading}
 
-suppressMessages(library(tidyr));suppressMessages(library(plyr));suppressMessages(library(dplyr)); suppressMessages(library(ggplot2)); suppressMessages(library(reshape2)); suppressMessages(library(VIM)); suppressMessages(library(missForest)); suppressMessages(library(Hmisc)); suppressMessages(library(censReg)); suppressMessages(library(DMwR)); suppressMessages(library(stats)); suppressMessages(library(moments)); suppressMessages(library(rpart)); suppressMessages(library(randomForest)); suppressMessages(library(ROCR));
+suppressMessages(library(tidyr));suppressMessages(library(plyr));suppressMessages(library(dplyr)); suppressMessages(library(ggplot2)); suppressMessages(library(reshape2)); suppressMessages(library(VIM)); suppressMessages(library(missForest)); suppressMessages(library(Hmisc)); suppressMessages(library(censReg)); suppressMessages(library(DMwR)); suppressMessages(library(stats)); suppressMessages(library(moments)); suppressMessages(library(rpart)); suppressMessages(library(randomForest)); suppressMessages(library(ROCR)); suppressMessages(library(modelr)); suppressMessages(library(boot))
 
 setwd('~/Desktop/Ed_Neuro/Reading_Data_SFSD')
 raw_full = read.csv(file="full.csv",header=T, na.strings=c("","NA", "N/A", "na", "n/a", " "))
@@ -76,8 +77,24 @@ prf <- performance(pr, measure = "tpr", x.measure = "fpr")
 auc <- performance(pr, measure = "auc")
 auc <- auc@y.values[[1]]
 auc #0.8175
-
 plot(prf)
+
+train_predictibility <- train.data %>%
+  as_data_frame() %>%
+  add_predictions(log_reg_full) %>%
+  select(ela_achievementlevel_caasp, pred) %>%
+  mutate(pred = inv.logit(pred)) %>%
+  mutate(pred_binary = as.numeric(pred > 0.5)) %>%
+  mutate(correct = (ela_achievementlevel_caasp == pred_binary))
+
+mean(train_predictibility$ela_achievementlevel_caasp)
+
+train_predictibility %>%
+  dplyr::group_by(pred_binary) %>%
+  dplyr::summarize(mean(ela_achievementlevel_caasp), mean(correct))
+
+
+
 
 ```
 
